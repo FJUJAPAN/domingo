@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>AR</title>
+
+<script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+
+<style>
+*{box-sizing:border-box}
+
+html,body{
+  margin:0;
+  width:100%;
+  height:100%;
+  overflow:hidden;
+  background:transparent!important;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+}
+
+a-scene,.a-canvas{
+  background:transparent!important;
+}
+
+/* Guia discreto enquanto procura o panfleto */
+#scanUI{
+  position:fixed;
+  z-index:2000;
+  inset:0;
+  pointer-events:none;
+  opacity:1;
+  transition:opacity .25s ease;
+}
+#scanUI.hidden{opacity:0}
+
+#guide{
+  position:absolute;
+  left:50%;
+  top:50%;
+  width:min(84vw,650px);
+  aspect-ratio:1.414/1;
+  transform:translate(-50%,-50%);
+}
+
+.corner{
+  position:absolute;
+  width:35px;
+  height:35px;
+  border-color:rgba(255,255,255,.95);
+  border-style:solid;
+  filter:drop-shadow(0 2px 7px rgba(0,0,0,.45));
+}
+.tl{left:0;top:0;border-width:3px 0 0 3px;border-radius:10px 0 0 0}
+.tr{right:0;top:0;border-width:3px 3px 0 0;border-radius:0 10px 0 0}
+.bl{left:0;bottom:0;border-width:0 0 3px 3px;border-radius:0 0 0 10px}
+.br{right:0;bottom:0;border-width:0 3px 3px 0;border-radius:0 0 10px 0}
+
+#scanMessage{
+  position:absolute;
+  left:50%;
+  bottom:max(34px,calc(env(safe-area-inset-bottom) + 22px));
+  transform:translateX(-50%);
+  width:max-content;
+  max-width:88vw;
+  padding:10px 15px;
+  border-radius:999px;
+  background:rgba(0,0,0,.55);
+  color:#fff;
+  text-align:center;
+  font-size:14px;
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+}
+
+/* Único toque necessário para liberar áudio no iPhone */
+#soundButton{
+  position:fixed;
+  z-index:3000;
+  left:50%;
+  bottom:max(92px,calc(env(safe-area-inset-bottom) + 80px));
+  transform:translateX(-50%);
+  border:0;
+  border-radius:999px;
+  padding:13px 20px;
+  background:#fff;
+  color:#111;
+  font-size:16px;
+  font-weight:800;
+  box-shadow:0 8px 30px rgba(0,0,0,.28);
+  transition:opacity .25s ease,transform .25s ease;
+}
+#soundButton.hidden{
+  opacity:0;
+  transform:translate(-50%,10px);
+  pointer-events:none;
+}
+
+/* Aviso rápido */
+#foundToast{
+  position:fixed;
+  z-index:2200;
+  top:max(18px,env(safe-area-inset-top));
+  left:50%;
+  transform:translate(-50%,-10px);
+  padding:9px 14px;
+  border-radius:999px;
+  background:rgba(0,0,0,.55);
+  color:#fff;
+  font-size:14px;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity .2s ease,transform .2s ease;
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+}
+#foundToast.show{
+  opacity:1;
+  transform:translate(-50%,0);
+}
+</style>
+</head>
+
+<body>
+
+<div id="scanUI">
+  <div id="guide">
+    <div class="corner tl"></div>
+    <div class="corner tr"></div>
+    <div class="corner bl"></div>
+    <div class="corner br"></div>
+  </div>
+  <div id="scanMessage">Aponte para o panfleto</div>
+</div>
+
+<button id="soundButton">🔊 Ativar som</button>
+<div id="foundToast">✓ Panfleto encontrado</div>
+
+<a-scene
+  mindar-image="imageTargetSrc: ./assets/targets.mind; filterMinCF: 0.001; filterBeta: 0.01; missTolerance: 6; warmupTolerance: 5;"
+  color-space="sRGB"
+  renderer="colorManagement: true; physicallyCorrectLights: true; antialias: true; alpha: true;"
+  vr-mode-ui="enabled: false"
+  device-orientation-permission-ui="enabled: false"
+  embedded>
+
+  <a-assets timeout="30000">
+    <video
+      id="arVideo"
+      src="./assets/video.mp4"
+      preload="auto"
+      loop
+      muted
+      playsinline
+      webkit-playsinline
+      crossorigin="anonymous">
+    </video>
+  </a-assets>
+
+  <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+  <a-entity id="target" mindar-image-target="targetIndex: 0">
+    <a-video
+      id="videoPlane"
+      src="#arVideo"
+      position="0 0 0.01"
+      width="1.015"
+      height="1"
+      material="shader: flat;">
+    </a-video>
+  </a-entity>
+
+</a-scene>
+
+<script>
+window.addEventListener("DOMContentLoaded",()=>{
+  const video=document.querySelector("#arVideo");
+  const plane=document.querySelector("#videoPlane");
+  const target=document.querySelector("#target");
+  const scanUI=document.querySelector("#scanUI");
+  const soundButton=document.querySelector("#soundButton");
+  const foundToast=document.querySelector("#foundToast");
+
+  let soundUnlocked=false;
+  let targetVisible=false;
+  let lostTimer=null;
+  let toastTimer=null;
+
+  // Ajusta automaticamente o vídeo à proporção real.
+  video.addEventListener("loadedmetadata",()=>{
+    if(video.videoWidth && video.videoHeight){
+      plane.setAttribute("height",(video.videoHeight/video.videoWidth)*1.015);
+    }
+  });
+
+  // O toque só é necessário por causa das regras de áudio do Safari/iPhone.
+  soundButton.addEventListener("click",async()=>{
+    soundUnlocked=true;
+
+    try{
+      video.muted=false;
+      await video.play();
+
+      if(!targetVisible){
+        video.pause();
+      }
+    }catch(e){}
+
+    soundButton.classList.add("hidden");
+  });
+
+  target.addEventListener("targetFound",async()=>{
+    clearTimeout(lostTimer);
+    targetVisible=true;
+    scanUI.classList.add("hidden");
+
+    foundToast.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer=setTimeout(()=>{
+      foundToast.classList.remove("show");
+    },800);
+
+    try{
+      video.muted=!soundUnlocked;
+
+      // Só reinicia se ele realmente estava parado.
+      if(video.paused){
+        await video.play();
+      }
+    }catch(e){
+      // Fallback: permite reprodução muda mesmo antes de ativar o áudio.
+      try{
+        video.muted=true;
+        await video.play();
+      }catch(_){}
+    }
+  });
+
+  target.addEventListener("targetLost",()=>{
+    targetVisible=false;
+
+    // Evita parar por pequenas falhas de rastreamento.
+    lostTimer=setTimeout(()=>{
+      if(!targetVisible){
+        video.pause();
+        scanUI.classList.remove("hidden");
+      }
+    },800);
+  });
+
+  document.addEventListener("visibilitychange",()=>{
+    if(document.hidden){
+      video.pause();
+    }else if(targetVisible){
+      video.play().catch(()=>{});
+    }
+  });
+});
+</script>
+
+</body>
+</html>
